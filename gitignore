@@ -1,0 +1,9 @@
+API_Keys.py
+.venv
+env1
+*.pyc
+.DS*
+benchmark_output
+.vscode/settings.json
+tmp1.py
+results.tmp.txt
