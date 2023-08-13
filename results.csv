@@ -1,7 +1,7 @@
 LLM,Accuracy,Cost 1MT/Input,Correct answers,Total answers
-anthropic.claude-v1,75.41%,$11,46,61
-anthropic.claude-instant-v1,70.49%,$1.6,43,61
-text-davinci-003,62.3%,$1.5,38,61
-gpt-3.5-turbo,50.82%,$30,31,61
-GPT-4,not yet tested,$30,-,61
-anthropic.claude-v2,not yet tested,$11.02,-,61
+anthropic.claude-instant-v1,89.33%,$1.63,67,75
+anthropic.claude-v1,89.33%,$11,67,75
+anthropic.claude-v2,93.33%,$11,70,75
+text-davinci-003,78.7%,$1.5,59,75
+gpt-3.5-turbo,68%,$30,31,75
+gpt-4,92%,$30,69,75

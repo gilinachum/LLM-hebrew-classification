@@ -41,9 +41,7 @@ def get_llm(llm_name):
         import boto3
         from langchain.llms.bedrock import Bedrock
         BEDROCK_CLIENT = boto3.client("bedrock", 'us-east-1')
-        return Bedrock(model_id=llm_name, client=BEDROCK_CLIENT) #todo temp=0, but how?
-    
-
+        return Bedrock(model_id=llm_name, client=BEDROCK_CLIENT, model_kwargs={"temperature": 0})
     assert(False)
     
     
@@ -69,21 +67,23 @@ def print_records(records):
         new_record['category'] = "".join(reversed(record['category']))
         logger.log(logging.DEBUG, new_record)
         
+        
 def get_unique_categories(records):
     categories = set()
     for record in records:
         categories.add(record['category'])
-    return categories
+    # sort the categories set for consistency across executions
+    return sorted(categories)
 
         
-def create_few_shot_prompt_template(unique_categories, record_per_unique_category, is_chat : bool):  
+def create_few_shot_prompt_template(unique_categories, record_per_unique_category, is_chat : bool, human_nickname : str):  
     categories_csv = ", ".join(unique_categories)
-    task_str = f"סווג את ההודעות הבאות לאחת מן הקטגוריות הללו: {categories_csv}.",
+    task_str = f"סווג את ההודעות הבאות לבדיוק אחת מן הקטגוריות הללו: {categories_csv}.",
     examples = record_per_unique_category
     
     example_prompt = PromptTemplate(input_variables=["message", "category"], 
                                     template= f"""
-user: הודעה: {{message}}
+{human_nickname}: הודעה: {{message}}
 assistant: קטגוריה: {{category}}"""
     )
     logger.log(logging.INFO, example_prompt.format(**examples[0]))
@@ -91,63 +91,19 @@ assistant: קטגוריה: {{category}}"""
     fewshot_template = FewShotPromptTemplate(
         examples=examples, 
         example_prompt=example_prompt, 
-        prefix=f"user: {task_str}",
+        prefix=f"{human_nickname}: {task_str}",
         suffix= f"""
-user: הודעה: {{message}}
+{human_nickname}: הודעה: {{message}}
 assistant: קטגוריה: """, 
         input_variables=["message"]
     )
     
     if not is_chat:
         return fewshot_template
-
-    human_message_prompt = HumanMessagePromptTemplate(
-        prompt=fewshot_template)
-    
-    #print ("human_message_prompt: " + str(human_message_prompt))
-    chat_prompt_template = ChatPromptTemplate.from_messages([human_message_prompt])
-    #chat_prompt = ChatPromptTemplate.from_messages([system_message_prompt, example_human, example_ai, human_message_prompt])
-    
-    return chat_prompt_template
-
-
-def create_zero_shot_prompt_template(records):
-    uniq_categories = get_unique_categories(records)
-    record_per_unique_category = get_examples_per_category(records)
-    categories_csv = ", ".join(uniq_categories)
-    task_str = f"Classify the following messages to one of these classes: {categories_csv}"
-    # examples = record_per_unique_category
-
-
-    example_prompt = PromptTemplate(input_variables=["message"], 
-                                    template= f"""
-{task_str}
-Message: {{message}}
-Category: """)
-    logger.log(logging.INFO, example_prompt)
-    
-    return example_prompt
-
-def create_chat_prompt_template(records):
-    uniq_categories = get_unique_categories(records)
-    record_per_unique_category = get_examples_per_category(records)
-    categories_csv = ", ".join(uniq_categories)
-    
-    task_str = f"Classify the following messages to one of these classes: {categories_csv}"
-    
-    human_message_prompt = HumanMessagePromptTemplate(
-        prompt=PromptTemplate(
-            template= f"""
-{task_str}
-Message: {{message}}
-Category: """,
-            input_variables=["message"],
-        )
-    )
-    print (human_message_prompt)
-    chat_prompt_template = ChatPromptTemplate.from_messages([human_message_prompt])
-    
-    return chat_prompt_template
+    else:
+        human_message_prompt = HumanMessagePromptTemplate(prompt=fewshot_template)
+        chat_prompt_template = ChatPromptTemplate.from_messages([human_message_prompt])
+        return chat_prompt_template
 
 
 def log_to_file_as_json(output_file, the_object):        
@@ -160,7 +116,6 @@ def get_results_all_file(output_folder, llm_name):
 
 
 def split_train_test(records):
-    unique_categories = get_unique_categories(records)
     categories_seen = set()
     train = []
     test = []
@@ -187,44 +142,58 @@ def get_output_folder(output_path):
     os.makedirs(output_folder, exist_ok=True) 
     return output_folder
 
-
-def predict(records, prompt_template, output_folder : str, llm_name : str):
-
+def call_llm(llm_name, prompt_template, prompt_str, message):
     llm = get_llm(llm_name)
+    while True:
+        try: 
+            if (llm_name.startswith("gpt")):
+                chain = LLMChain(llm=llm, prompt=prompt_template)
+                prediction = chain.run(message)
+            else:
+                prediction = llm(prompt_str)
+            return prediction
+        # print any other error
+        except Exception as e:
+            if 'ThrottlingException' in str(e) or 'overloaded' in str(e) or 'Rate limit' in str(e): # could come in various class types
+                import time
+                sleep_seconds = 10
+                logger.log(logging.INFO, f"throttling or tmp server issue. Retrying in {sleep_seconds}s.")
+                time.sleep(sleep_seconds)
+                continue
+            else:
+                raise e
+    
+    
+def predict(records, prompt_template, output_folder : str, llm_name : str):
     incorrect_records = []
     for record in records:
         prompt_str = prompt_template.format(message=record['message']).strip()
         with open(f'{output_folder}/prompt-{llm_name}.txt', 'a') as outfile:
             outfile.write(prompt_str + "\n" + "-=-=-="*4 + "\n")
 
-        try:
-            if (llm_name.startswith("gpt")):
-                chain = LLMChain(llm=llm, prompt=prompt_template)
-                prediction = chain.run(record['message'])
-            else:
-                prediction = llm(prompt_str)
-            
-            
+            try:
+                prediction = call_llm(llm_name, prompt_template, prompt_str, record['message'])
+            except Exception as e:
+                logger.log(logging.ERROR, f"Error on message: {record['message']}")
+                logger.log(logging.ERROR, f"Error: {e}")
+                continue # move on to next message
             # break by newline TODO: find how to add stop sequence.
             prediction = prediction.split("\n")[0].strip()
+            prediction = prediction.replace("'", "׳").replace("`", "׳") # need for Claude v2 גרש
             record['prediction'] = prediction
             if (prediction == record['category']):
                 record['correct'] = True
             else:
                 record['correct'] = False
                 incorrect_records.append(record)
-            logger.log(logging.INFO, f"{record['correct']} {''.join(reversed(prediction))} {''.join(reversed(record['category']))}")
+            logger.log(logging.INFO, f"{record['correct']} Prediction->{''.join(reversed(prediction))} Actual->{''.join(reversed(record['category']))}")
             
             log_to_file_as_json(get_results_all_file(output_folder, llm_name), records)
             log_to_file_as_json(f'{output_folder}/results-incorrect-{llm_name}.json', incorrect_records)
-                            
-            if (llm_name.startswith("anthropic") or llm_name.startswith("gpt-4")):
-                # Avoid throttling
-                import time
-                time.sleep(35)
-        except openai.error.InvalidRequestError:
-            logger.log(logging.INFO, f"Too long. Skipped on message: {record['message']}")
-            continue
+                    
+
+def is_anthropic(llm_name):
+    return llm_name.startswith("anthropic")
 
 
 def evaluate(llm_name, output_path):  
@@ -236,23 +205,26 @@ def evaluate(llm_name, output_path):
     train_set, test_set = split_train_test(records)
    
     is_chat = llm_name.startswith("gpt")
-    prompt_template=create_few_shot_prompt_template(unique_categories,train_set, is_chat=is_chat)
+    human_nickname = "human" if is_anthropic(llm_name) else "user"
+    prompt_template = create_few_shot_prompt_template(unique_categories,train_set, is_chat, human_nickname)
 
     prompt_str = prompt_template.format(message='place message to classify here').strip()
     logger.log(logging.INFO, f"prompt_str={prompt_str}")
 
     output_folder = get_output_folder(output_path)
     predict(test_set, prompt_template, output_folder, llm_name)
-    return
+    return output_folder
         
 
-def report(llm_name, output_path):
-    # get the most recent folder in output_folder
-    import glob
-    folders = glob.glob(f'{output_path}/*')
-    most_recent_folder = max(folders, key=os.path.getctime)
-    logger.log(logging.INFO, f"Found latest results folder to be: {most_recent_folder}")
-    results_filename = get_results_all_file(most_recent_folder, llm_name)
+def report(llm_name : str, reports_parent_folder : str = None, report_folder : str= None):
+    if report_folder is None:
+        # get the most recent folder in output_folder
+        import glob
+        folders = glob.glob(f'{reports_parent_folder}/*')
+        most_recent_folder = max(folders, key=os.path.getctime)
+        logger.log(logging.INFO, f"Found latest results folder to be: {most_recent_folder}")
+        report_folder = most_recent_folder
+    results_filename = get_results_all_file(report_folder, llm_name)
     
     logger.log(logging.INFO, f"Loading results file: {results_filename}")
     with open(results_filename, 'r', encoding='utf8') as file:
@@ -298,7 +270,8 @@ def parse_args():
         "--action", type=str, default="evaluate", choices=('evaluate', 'report') 
     )
     parser.add_argument(
-        "--llm-names", type=str, default='text-davinci-003', choices=('j2-grande', 'anthropic.claude-instant-v1', 'anthropic.claude-v1', 'text-davinci-003', 'gpt-4','gpt-3.5-turbo')
+        "--llm-names", type=str, default='anthropic.claude-instant-v1', 
+        choices=('j2-grande', 'anthropic.claude-v2', 'anthropic.claude-instant-v1', 'anthropic.claude-v1', 'text-davinci-003', 'gpt-4','gpt-3.5-turbo')
     )
     parser.add_argument(
         "-o", "--output-path", type=str, help="Where to save all the output", default="./benchmark_output"
@@ -313,15 +286,15 @@ def main():
     for llm_name in args.llm_names.split(","):
         llm_name = llm_name.strip()
         if args.action == "evaluate":
-            evaluate(llm_name=llm_name,
+            report_folder = evaluate(llm_name=llm_name,
                         output_path=args.output_path
             )
             report(llm_name=llm_name,
-                output_path=args.output_path
+                report_folder=output_folder
             )
         elif args.action == "report":
             report(llm_name=llm_name,
-                output_path=args.output_path
+                reports_parent_folder=args.output_path
             )
         else:
             assert False, f"unknown action: {args.action}"
@@ -329,4 +302,3 @@ def main():
         
 if __name__ == "__main__":
     main()
-    
