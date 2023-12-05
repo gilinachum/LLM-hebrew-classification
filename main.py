@@ -37,7 +37,7 @@ def get_llm(llm_name):
         return llm
     
     if (llm_name.startswith("anthropic")):
-        os.environ["AWS_PROFILE"] = 'gili-bedrock'
+        #os.environ["AWS_PROFILE"] = ...
         import boto3
         from langchain.llms.bedrock import Bedrock
         BEDROCK_CLIENT = boto3.client("bedrock-runtime", 'us-east-1')
