@@ -37,10 +37,10 @@ def get_llm(llm_name):
         return llm
     
     if (llm_name.startswith("anthropic")):
-        os.environ["AWS_PROFILE"] = 'gili-bedrock'
+        #os.environ["AWS_PROFILE"] = ...
         import boto3
         from langchain.llms.bedrock import Bedrock
-        BEDROCK_CLIENT = boto3.client("bedrock", 'us-east-1')
+        BEDROCK_CLIENT = boto3.client("bedrock-runtime", 'us-east-1')
         return Bedrock(model_id=llm_name, client=BEDROCK_CLIENT, model_kwargs={"temperature": 0})
     assert(False)
     
@@ -84,7 +84,8 @@ def create_few_shot_prompt_template(unique_categories, record_per_unique_categor
     example_prompt = PromptTemplate(input_variables=["message", "category"], 
                                     template= f"""
 {human_nickname}: הודעה: {{message}}
-assistant: קטגוריה: {{category}}"""
+
+Assistant: קטגוריה: {{category}}"""
     )
     logger.log(logging.INFO, example_prompt.format(**examples[0]))
     
@@ -94,7 +95,8 @@ assistant: קטגוריה: {{category}}"""
         prefix=f"{human_nickname}: {task_str}",
         suffix= f"""
 {human_nickname}: הודעה: {{message}}
-assistant: קטגוריה: """, 
+
+Assistant: קטגוריה: """, 
         input_variables=["message"]
     )
     
@@ -163,7 +165,18 @@ def call_llm(llm_name, prompt_template, prompt_str, message):
             else:
                 raise e
     
-    
+def generate_model_eval_input_file(records, prompt_template, output_folder : str, llm_name : str):
+    import json
+    with open(f'{output_folder}/model_eval_prompt-{llm_name}.jsonl', 'a', encoding='utf-8') as outfile:
+        for record in records:
+            prompt_str = prompt_template.format(message=record['message']).strip()    
+            line = {}
+            line['prompt'] = prompt_str
+            line['referenceResponse'] = record['category']
+            line["category"] = record['category']
+            outfile.write(json.dumps(line) + "\n")
+            
+                
 def predict(records, prompt_template, output_folder : str, llm_name : str):
     incorrect_records = []
     for record in records:
@@ -205,7 +218,7 @@ def evaluate(llm_name, output_path):
     train_set, test_set = split_train_test(records)
    
     is_chat = llm_name.startswith("gpt")
-    human_nickname = "human" if is_anthropic(llm_name) else "user"
+    human_nickname = "Human" if is_anthropic(llm_name) else "user"
     prompt_template = create_few_shot_prompt_template(unique_categories,train_set, is_chat, human_nickname)
 
     prompt_str = prompt_template.format(message='place message to classify here').strip()
@@ -213,6 +226,7 @@ def evaluate(llm_name, output_path):
 
     output_folder = get_output_folder(output_path)
     predict(test_set, prompt_template, output_folder, llm_name)
+    #generate_model_eval_input_file(test_set, prompt_template, output_folder, llm_name)
     return output_folder
         
 
